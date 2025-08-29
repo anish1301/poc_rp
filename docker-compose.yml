@@ -1,0 +1,100 @@
+version: '3.8'
+
+services:
+  # MongoDB for data persistence
+  mongodb:
+    image: mongo:7
+    container_name: poc-rp-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password123
+      MONGO_INITDB_DATABASE: poc-rp-db
+    volumes:
+      - mongodb_data:/data/db
+      - ./init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js:ro
+    networks:
+      - poc-rp-network
+
+  # Redis for caching
+  redis:
+    image: redis:7-alpine
+    container_name: poc-rp-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --requirepass redis123
+    volumes:
+      - redis_data:/data
+    networks:
+      - poc-rp-network
+
+  # Redis Insight for Redis management (optional)
+  redis-insight:
+    image: redislabs/redisinsight:latest
+    container_name: poc-rp-redis-insight
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    volumes:
+      - redis_insight_data:/db
+    networks:
+      - poc-rp-network
+
+  # Node.js Backend (optional - for containerized deployment)
+  # Uncomment to run the backend in Docker
+  # backend:
+  #   build: 
+  #     context: ./server
+  #     dockerfile: Dockerfile
+  #   container_name: poc-rp-backend
+  #   restart: unless-stopped
+  #   ports:
+  #     - "5000:5000"
+  #   environment:
+  #     NODE_ENV: development
+  #     PORT: 5000
+  #     MONGODB_URI: mongodb://admin:password123@mongodb:27017/poc-rp-db?authSource=admin
+  #     REDIS_URL: redis://:redis123@redis:6379
+  #     GEMINI_API_KEY: ${GEMINI_API_KEY}
+  #   depends_on:
+  #     - mongodb
+  #     - redis
+  #   volumes:
+  #     - ./server:/app
+  #     - /app/node_modules
+  #   networks:
+  #     - poc-rp-network
+
+  # React Frontend (optional - for containerized deployment)
+  # Uncomment to run the frontend in Docker
+  # frontend:
+  #   build: 
+  #     context: ./client
+  #     dockerfile: Dockerfile
+  #   container_name: poc-rp-frontend
+  #   restart: unless-stopped
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     REACT_APP_API_URL: http://localhost:5000
+  #   depends_on:
+  #     - backend
+  #   volumes:
+  #     - ./client/src:/app/src
+  #   networks:
+  #     - poc-rp-network
+
+volumes:
+  mongodb_data:
+    driver: local
+  redis_data:
+    driver: local
+  redis_insight_data:
+    driver: local
+
+networks:
+  poc-rp-network:
+    driver: bridge
