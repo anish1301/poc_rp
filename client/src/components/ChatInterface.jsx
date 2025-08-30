@@ -11,7 +11,6 @@ const ChatInterface = () => {
     error,
     sendMessage,
     clearConversation,
-    conversationStats,
     orderStatus
   } = useChat();
 
@@ -155,30 +154,18 @@ const ChatInterface = () => {
       {/* Header */}
       <div className="chat-header">
         <div className="header-content">
-          <h1>Order Management Assistant</h1>
-          <div className="connection-status">
-            <span className={`status-indicator ${isConnected ? 'connected' : 'disconnected'}`}>
-              {isConnected ? '🟢 Connected' : '🔴 Disconnected'}
-            </span>
-          </div>
+          <h2>💬 Chat Assistant</h2>
+          <p className="header-subtitle">Ask me about your orders, cancellations, and more</p>
         </div>
         
-        {/* Stats Bar */}
-        <div className="stats-bar">
-          <div className="stat">
-            <span className="stat-label">Messages:</span>
-            <span className="stat-value">{conversationStats.totalMessages}</span>
-          </div>
-          <div className="stat">
-            <span className="stat-label">Cache Hits:</span>
-            <span className="stat-value">{conversationStats.cacheHits}</span>
-          </div>
-          <div className="stat">
-            <span className="stat-label">Avg Response:</span>
-            <span className="stat-value">{conversationStats.avgResponseTime}ms</span>
+        <div className="header-actions">
+          <div className="connection-status">
+            <span className={`status-indicator ${isConnected ? 'connected' : 'disconnected'}`}>
+              {isConnected ? '🟢 Online' : '🔴 Offline'}
+            </span>
           </div>
           <button onClick={handleClearChat} className="clear-btn">
-            Clear Chat
+            🗑️ Clear Chat
           </button>
         </div>
       </div>
@@ -187,19 +174,22 @@ const ChatInterface = () => {
       <div className="messages-container">
         {messages.length === 0 ? (
           <div className="welcome-message">
-            <h2>👋 Welcome to Order Management Chat</h2>
-            <p>I can help you with order cancellations, status checks, and general inquiries.</p>
+            <div className="welcome-icon">🤖</div>
+            <h3>Welcome to Order Management Assistant</h3>
+            <p>I'm here to help you with order tracking, cancellations, and general inquiries. What can I help you with today?</p>
             <div className="suggested-messages">
-              <h3>Try these examples:</h3>
-              {suggestedMessages.map((message, index) => (
-                <button
-                  key={index}
-                  onClick={() => handleSuggestedMessage(message)}
-                  className="suggested-message-btn"
-                >
-                  {message}
-                </button>
-              ))}
+              <h4>Try these examples:</h4>
+              <div className="suggested-grid">
+                {suggestedMessages.map((message, index) => (
+                  <button
+                    key={index}
+                    onClick={() => handleSuggestedMessage(message)}
+                    className="suggested-message-btn"
+                  >
+                    {message}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
         ) : (
