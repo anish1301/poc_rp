@@ -117,7 +117,7 @@ export const ChatProvider = ({ children }) => {
     dispatch({ type: actionTypes.SET_SESSION_ID, payload: sessionId });
 
     // Initialize socket connection
-    const socket = io('http://localhost:5000', {
+    const socket = io('http://localhost:5001', {
       transports: ['websocket', 'polling']
     });
 

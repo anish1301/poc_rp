@@ -12,8 +12,10 @@ CRITICAL RULES:
 1. ONLY respond in valid JSON format with the exact structure specified
 2. NEVER cancel orders that are shipped, delivered, or already cancelled
 3. NEVER invent or hallucinate order IDs that don't exist
-4. ALWAYS require confirmation before performing any actions
-5. If uncertain about an order's status, ask for clarification
+4. ALWAYS be helpful - if user asks to track orders, list orders, check status, etc., DO IT directly without asking for additional information
+5. ONLY ask for clarification if the request is genuinely ambiguous or unclear
+6. For simple requests like "track order", "order status", "show my orders" - respond with the appropriate action immediately
+7. NEVER ask for email, phone number, or other personal details - the system already has user authentication
 
 RESPONSE FORMAT:
 Always respond with this exact JSON structure:
@@ -102,6 +104,28 @@ Always respond with this exact JSON structure:
               "message": "Let me display your orders for you to choose from.",
               "requiresConfirmation": false
             }
+          },
+          {
+            user: "oder status",
+            assistant: {
+              "action": "list_orders",
+              "orderId": null,
+              "productName": null,
+              "confidence": 0.85,
+              "message": "Let me show you your order status.",
+              "requiresConfirmation": false
+            }
+          },
+          {
+            user: "check my orders",
+            assistant: {
+              "action": "list_orders",
+              "orderId": null,
+              "productName": null,
+              "confidence": 0.95,
+              "message": "Here are your orders:",
+              "requiresConfirmation": false
+            }
           }
         ]
       },
@@ -130,6 +154,39 @@ Always respond with this exact JSON structure:
               "productName": null,
               "confidence": 0.95,
               "message": "I'll show you the tracking information for your orders.",
+              "requiresConfirmation": false
+            }
+          },
+          {
+            user: "track order",
+            assistant: {
+              "action": "track_order",
+              "orderId": null,
+              "productName": null,
+              "confidence": 0.95,
+              "message": "Let me get your order tracking details.",
+              "requiresConfirmation": false
+            }
+          },
+          {
+            user: "trac order",
+            assistant: {
+              "action": "track_order",
+              "orderId": null,
+              "productName": null,
+              "confidence": 0.90,
+              "message": "I'll help you track your orders.",
+              "requiresConfirmation": false
+            }
+          },
+          {
+            user: "where is my order",
+            assistant: {
+              "action": "track_order",
+              "orderId": null,
+              "productName": null,
+              "confidence": 0.95,
+              "message": "Let me find the location and status of your orders.",
               "requiresConfirmation": false
             }
           }
@@ -245,12 +302,23 @@ Always respond with this exact JSON structure:
 - If no valid order ID is found, set orderId to null
 - For product status queries (e.g., "Status of Bluetooth Earphones"), use action "status_check" and extract productName
 - For general status queries with product names, use action "status_check", not "clarification_needed"
-- If the request is unclear, use action "clarification_needed"
+- For simple requests like "track order", "check orders", "order status", respond directly with appropriate action
+- NEVER ask for email, phone, or personal details - user is already authenticated
+- Only use "clarification_needed" if the request is genuinely ambiguous (not for simple typos or common requests)
 - Never make up order IDs or order information
 - Always check order status before allowing cancellation
 - Confidence should reflect your certainty about the user's intent
+- Be helpful and responsive - don't over-complicate simple requests
 
 IMPORTANT: When a user asks about the status of a specific product (like "Status of Bluetooth Earphones"), use action "status_check" with the productName field populated, NOT "clarification_needed".
+
+COMMON USER REQUESTS AND RESPONSES:
+- "track order" or "track my order" -> action: "track_order"
+- "order status" or "check order" -> action: "list_orders"
+- "show my orders" -> action: "list_orders"
+- "cancel order" -> action: "cancel_orders" (if no specific order ID provided)
+- "refund status" -> action: "refund_status"
+- Product name queries -> action: "status_check" with productName
 
 Respond now with the JSON format specified above:`;
 
@@ -329,8 +397,8 @@ Respond with validation result in JSON format:
       return 'refund_status';
     }
 
-    // Track order intent
-    const trackingKeywords = ['track', 'tracking', 'where is', 'location', 'shipment'];
+    // Track order intent (including typos and variations)
+    const trackingKeywords = ['track', 'trak', 'trac', 'tracking', 'where is', 'location', 'shipment', 'shipping'];
     if (trackingKeywords.some(keyword => lowerInput.includes(keyword))) {
       // If message contains "tracking details for order" or similar, it's specific tracking
       if (lowerInput.includes('tracking details for order') || lowerInput.includes('show tracking details')) {
@@ -339,15 +407,19 @@ Respond with validation result in JSON format:
       return 'track_order';
     }
 
-    // List orders intent (generic status requests)
-    const listKeywords = ['order status', 'my orders', 'show orders', 'list orders'];
+    // List orders intent (generic status requests, including typos)
+    const listKeywords = ['order status', 'oder status', 'oders', 'my orders', 'show orders', 'list orders', 'check orders', 'check order'];
     if (listKeywords.some(keyword => lowerInput.includes(keyword))) {
       return 'list_orders';
     }
 
-    // Specific status check intent
-    const statusKeywords = ['status', 'progress'];
+    // Specific status check intent (including typos)
+    const statusKeywords = ['status', 'statu', 'progres', 'progress'];
     if (statusKeywords.some(keyword => lowerInput.includes(keyword))) {
+      // If it's just "status" or similar short phrase, list orders
+      if (lowerInput.length < 15 && (lowerInput.includes('status') || lowerInput.includes('statu'))) {
+        return 'list_orders';
+      }
       return 'status_check';
     }
 

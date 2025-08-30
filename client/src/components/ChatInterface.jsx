@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useChat } from '../context/ChatContext';
+import { useNotification } from '../context/NotificationContext';
 import './ChatInterface.css';
 
 const ChatInterface = () => {
@@ -14,9 +15,49 @@ const ChatInterface = () => {
     orderStatus
   } = useChat();
 
+  const { showSuccess, showError, showInfo } = useNotification();
+
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef(null);
+
+  // Show notifications for connection status changes
+  useEffect(() => {
+    if (isConnected) {
+      showSuccess('🔗 Connected to server', 3000);
+    }
+  }, [isConnected, showSuccess]);
+
+  // Show notifications based on message metadata
+  useEffect(() => {
+    if (messages.length > 0) {
+      const lastMessage = messages[messages.length - 1];
+      
+      // Show notifications for order updates and important events
+      if (lastMessage.metadata?.orderUpdate) {
+        showInfo('📦 Order status updated!', 4000);
+      }
+      
+      if (lastMessage.metadata?.cached) {
+        showInfo('⚡ Quick response from cache', 2000);
+      }
+      
+      if (lastMessage.metadata?.error) {
+        showError('❌ ' + lastMessage.content, 5000);
+      }
+
+      // Show notifications for successful actions
+      if (lastMessage.role === 'assistant' && lastMessage.content) {
+        if (lastMessage.content.includes('successfully cancelled')) {
+          showSuccess('✅ Order cancelled successfully!\n\nYou will receive a refund within 3-5 business days.', 6000);
+        } else if (lastMessage.content.includes('has been shipped')) {
+          showInfo('📦 Order shipped!\n\nYour order is on its way to you.', 5000);
+        } else if (lastMessage.content.includes('delivered')) {
+          showSuccess('✅ Order delivered!\n\nEnjoy your purchase!', 5000);
+        }
+      }
+    }
+  }, [messages, showSuccess, showError, showInfo]);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -28,7 +69,17 @@ const ChatInterface = () => {
     if (!inputMessage.trim() || isLoading) return;
 
     setIsLoading(true);
-    await sendMessage(inputMessage);
+    try {
+      const result = await sendMessage(inputMessage);
+      if (result) {
+        // Message sent successfully - could show a subtle notification
+        if (result.metadata?.cached) {
+          showInfo('⚡ Fast response from cache!', 2000);
+        }
+      }
+    } catch (error) {
+      showError('Failed to send message. Please try again.', 4000);
+    }
     setInputMessage('');
     setIsLoading(false);
   };
@@ -36,6 +87,7 @@ const ChatInterface = () => {
   const handleClearChat = async () => {
     if (window.confirm('Are you sure you want to clear the conversation?')) {
       await clearConversation();
+      showInfo('🗑️ Conversation cleared', 3000);
     }
   };
 
@@ -59,33 +111,8 @@ const ChatInterface = () => {
     
     setIsLoading(true);
     
-    // Send the button value as a message based on action type
-    if (button.action === 'order_selected') {
-      await sendMessage(`Order status for ${button.value}`);
-    } else if (button.action === 'refund_selected') {
-      if (button.value === 'refund_all') {
-        await sendMessage('Show all refund statuses');
-      } else {
-        const orderId = button.value.replace('refund_', '');
-        await sendMessage(`Refund status for ${orderId}`);
-      }
-    } else if (button.action === 'track_selected') {
-      const orderId = button.value.replace('track_', '');
-      await sendMessage(`Show tracking details for order ${orderId}`);
-    } else if (button.action === 'cancel_order_selected') {
-      // Extract order ID from button value and send clear cancellation request
-      const orderId = button.value.replace('cancel_', '');
-      await sendMessage(`Cancel order ${orderId}`);
-    } else if (button.action === 'confirm_cancellation') {
-      // Send the button value for confirmation
-      await sendMessage(button.value);
-    } else if (button.action === 'cancel_abort') {
-      // Send abort message
-      await sendMessage('No, keep my order');
-    } else {
-      // Generic button click - send the button text or value
-      await sendMessage(button.text || button.value);
-    }
+    // Send the button value directly - let backend handle the parsing
+    await sendMessage(button.value);
     
     setIsLoading(false);
   };

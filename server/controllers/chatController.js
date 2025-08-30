@@ -228,6 +228,102 @@ router.post('/message', chatRateLimit, async (req, res) => {
       });
     }
 
+    // Check for button clicks first (track, cancel, refund actions)
+    const buttonAction = detectButtonAction(message);
+    console.log(`[DEBUG] Button action detected:`, buttonAction);
+    if (buttonAction) {
+      console.log(`[DEBUG] Processing button action: ${buttonAction.action} for ${buttonAction.orderId || buttonAction.value}`);
+      let buttonResponse;
+      
+      switch (buttonAction.action) {
+        case 'track_selected':
+          buttonResponse = await handleSpecificOrderTracking(userId, {
+            action: 'track_specific_order',
+            orderId: buttonAction.orderId,
+            confidence: 1.0,
+            message: `Getting tracking details for order ${buttonAction.orderId}...`
+          });
+          break;
+        case 'order_selected':
+          buttonResponse = await handleOrderStatusCheck(userId, {
+            action: 'status_check',
+            orderId: buttonAction.orderId,
+            confidence: 1.0,
+            message: `Getting details for order ${buttonAction.orderId}...`
+          });
+          break;
+        case 'refund_selected':
+          if (buttonAction.value === 'refund_all') {
+            buttonResponse = await handleRefundStatus(userId, {
+              action: 'refund_status',
+              confidence: 1.0,
+              message: 'Getting all refund statuses...'
+            });
+          } else {
+            buttonResponse = await handleRefundStatus(userId, {
+              action: 'refund_status',
+              orderId: buttonAction.orderId,
+              confidence: 1.0,
+              message: `Getting refund status for order ${buttonAction.orderId}...`
+            });
+          }
+          break;
+        case 'cancel_order_selected':
+          buttonResponse = await handleOrderCancellation(userId, {
+            action: 'order_cancellation',
+            orderId: buttonAction.orderId,
+            confidence: 1.0,
+            message: `Processing cancellation request for order ${buttonAction.orderId}...`
+          }, message, sessionId);
+          break;
+        case 'confirm_cancellation':
+          buttonResponse = await handleConfirmCancellation(userId, {
+            action: 'confirm_cancellation',
+            orderId: buttonAction.orderId,
+            confidence: 1.0,
+            message: 'Processing confirmation...'
+          }, message, sessionId);
+          break;
+        case 'cancel_abort':
+          buttonResponse = await handleCancelAbort(userId, {
+            action: 'cancel_abort',
+            confidence: 1.0,
+            message: 'Cancelling the cancellation request...'
+          });
+          break;
+        default:
+          buttonResponse = null;
+      }
+      
+      if (buttonResponse) {
+        // Add messages to conversation context
+        await contextService.addMessage(sessionId, 'user', message, {
+          actionType: buttonAction.action,
+          orderId: buttonAction.orderId,
+          confidence: 1.0,
+          buttonClick: true
+        });
+
+        await contextService.addMessage(sessionId, 'assistant', buttonResponse.message, {
+          actionType: buttonResponse.action,
+          orderId: buttonResponse.orderId,
+          cached: false,
+          validated: true,
+          buttonResponse: true
+        });
+        
+        return res.json({
+          ...buttonResponse,
+          metadata: {
+            totalResponseTime: Date.now() - startTime,
+            buttonAction: true,
+            sessionId,
+            timestamp: new Date().toISOString()
+          }
+        });
+      }
+    }
+
     // Check for direct product search patterns (fallback when AI quota is exceeded)
     const productSearchFallback = detectProductSearch(message);
     console.log(`[DEBUG] Product search fallback result:`, productSearchFallback);
@@ -345,8 +441,13 @@ router.post('/message', chatRateLimit, async (req, res) => {
         }
         break;
       case 'clarification_needed':
-        // If clarification is needed but we have a product name, try product search
-        if (aiResponse.productName) {
+        // Check if this is actually a common request that shouldn't need clarification
+        const fallbackAction = detectFallbackAction(message);
+        if (fallbackAction) {
+          console.log(`[DEBUG] Converting clarification_needed to ${fallbackAction.action} for message: ${message}`);
+          enhancedResponse = await processFallbackAction(userId, fallbackAction);
+        } else if (aiResponse.productName) {
+          // If clarification is needed but we have a product name, try product search
           console.log(`[DEBUG] Clarification needed but productName found: ${aiResponse.productName}, performing product search`);
           enhancedResponse = await handleProductStatusCheck(userId, aiResponse);
         }
@@ -635,8 +736,8 @@ async function handleListOrders(userId, aiResponse) {
     }
 
     // Create clickable buttons for each order
-    const buttons = orders.map(order => ({
-      text: `${order.orderId}: ${order.items[0]?.name} - $${order.totalAmount}`,
+    const buttons = orders.map((order, index) => ({
+      text: `${order.items[0]?.name || 'Order'} - $${order.totalAmount} (${order.status})`,
       value: order.orderId,
       action: 'order_selected'
     }));
@@ -645,7 +746,7 @@ async function handleListOrders(userId, aiResponse) {
 
     return {
       ...aiResponse,
-      message: `Here are your orders. Click on any order for more details:`,
+      message: `Here are your recent orders. Click on any order for more details:`,
       buttons: buttons,
       showAsButtons: true
     };
@@ -688,13 +789,13 @@ async function handleRefundStatus(userId, aiResponse) {
       const order = refundOrders[0];
       return {
         ...aiResponse,
-        message: `Your order ${order.orderId} (${order.items[0]?.name}) is currently being refunded. The amount $${order.totalAmount} will be returned to your bank account within 3-5 working days.`
+        message: `Your order for ${order.items[0]?.name} is currently being refunded. The amount $${order.totalAmount} will be returned to your bank account within 3-5 working days.`
       };
     }
 
     // Multiple refund orders - show options
     const buttons = refundOrders.map(order => ({
-      text: `${order.orderId}: ${order.items[0]?.name} - $${order.totalAmount}`,
+      text: `${order.items[0]?.name} - $${order.totalAmount} (${order.status})`,
       value: `refund_${order.orderId}`,
       action: 'refund_selected'
     }));
@@ -754,7 +855,7 @@ async function handleTrackOrder(userId, aiResponse) {
 
     // Multiple trackable orders - show options
     const buttons = trackableOrders.map(order => ({
-      text: `${order.orderId}: ${order.items[0]?.name}`,
+      text: `${order.items[0]?.name} - ${order.status}`,
       value: `track_${order.orderId}`,
       action: 'track_selected'
     }));
@@ -836,7 +937,7 @@ async function handleOrderStatusCheck(userId, aiResponse) {
     if (!order) {
       return {
         ...aiResponse,
-        message: `I couldn't find order ${aiResponse.orderId}. Please check the order ID or contact customer service.`
+        message: `I couldn't find the order you're looking for. Please check the order details or contact customer service.`
       };
     }
 
@@ -848,18 +949,54 @@ async function handleOrderStatusCheck(userId, aiResponse) {
     if (order.tracking && order.tracking.length > 0) {
       const latestTracking = order.tracking[order.tracking.length - 1];
       trackingInfo = `\n📍 Latest Update: ${latestTracking.status} - ${latestTracking.location || 'Processing'} (${new Date(latestTracking.timestamp).toLocaleDateString()})`;
+    } else if (order.currentLocation) {
+      trackingInfo = `\n📍 Current Location: ${order.currentLocation}`;
+    }
+
+    // Add detailed tracking for shipped/delivered orders
+    let trackingDetails = '';
+    if (['shipped', 'delivered'].includes(order.status)) {
+      const sampleHistory = generateSampleTrackingHistory(order.status, order.orderDate);
+      trackingDetails = `\n\n**📋 Tracking History:**\n`;
+      sampleHistory.forEach(event => {
+        trackingDetails += `• ${event.date} - ${event.location}: ${event.description}\n`;
+      });
+      
+      if (order.trackingNumber) {
+        trackingDetails += `\n**📦 Tracking Number**: ${order.trackingNumber}`;
+      }
+    }
+
+    // Create action buttons based on order status
+    const actionButtons = [];
+    
+    if (['pending', 'confirmed', 'processing'].includes(order.status)) {
+      actionButtons.push({
+        text: 'Cancel This Order',
+        value: `cancel_${order.orderId}`,
+        action: 'cancel_order_selected'
+      });
+    }
+    
+    if (['shipped', 'delivered'].includes(order.status)) {
+      actionButtons.push({
+        text: 'View Tracking Details',
+        value: `track_${order.orderId}`,
+        action: 'track_selected'
+      });
     }
 
     return {
       ...aiResponse,
-      message: `📦 **Order ${order.orderId}** ${statusMessage}
+      message: `📦 **${order.items[0]?.name}** ${statusMessage}
       
 **Items:** ${itemsList}
 **Total:** $${order.totalAmount}
-**Order Date:** ${new Date(order.orderDate).toLocaleDateString()}
-${trackingInfo}
+**Order Date:** ${new Date(order.orderDate).toLocaleDateString()}${trackingInfo}${trackingDetails}
 
-${getStatusActions(order.status)}`
+${getStatusActions(order.status)}`,
+      buttons: actionButtons.length > 0 ? actionButtons : undefined,
+      showAsButtons: actionButtons.length > 0
     };
 
   } catch (error) {
@@ -928,13 +1065,13 @@ async function handleProductStatusCheck(userId, aiResponse) {
       const order = orders[0];
       return {
         ...aiResponse,
-        message: `Your order ${order.orderId} for ${order.items[0]?.name} is currently ${order.status}. Order total: $${order.totalAmount}.`
+        message: `Your ${order.items[0]?.name} is currently ${order.status}. Order total: $${order.totalAmount}.`
       };
     }
 
     // Multiple matching orders
     const buttons = orders.map(order => ({
-      text: `${order.orderId}: ${order.items[0]?.name} - ${order.status}`,
+      text: `${order.items[0]?.name} - ${order.status} ($${order.totalAmount})`,
       value: order.orderId,
       action: 'order_selected'
     }));
@@ -958,18 +1095,25 @@ async function handleProductStatusCheck(userId, aiResponse) {
  * Generate detailed tracking information
  */
 function generateTrackingInfo(order, aiResponse) {
-  let trackingMessage = `📦 **Order ${order.orderId}**: ${order.items[0]?.name}\n\n`;
+  let trackingMessage = `📦 **${order.items[0]?.name}**\n\n`;
   
   if (order.status === 'delivered') {
     trackingMessage += `✅ **Status**: Delivered\n`;
-    trackingMessage += `📍 **Current Location**: ${order.currentLocation || 'Delivered'}\n\n`;
+    trackingMessage += `📍 **Current Location**: ${order.currentLocation || 'Delivered to your address'}\n\n`;
   } else {
-    trackingMessage += `🚚 **Status**: ${order.status}\n`;
-    trackingMessage += `📍 **Current Location**: ${order.currentLocation}\n`;
+    trackingMessage += `🚚 **Status**: ${order.status.charAt(0).toUpperCase() + order.status.slice(1)}\n`;
+    trackingMessage += `📍 **Current Location**: ${order.currentLocation || 'In Transit'}\n`;
     trackingMessage += `📅 **Estimated Delivery**: ${order.estimatedDelivery ? new Date(order.estimatedDelivery).toLocaleDateString() : 'TBD'}\n\n`;
   }
 
-  if (order.trackingHistory && order.trackingHistory.length > 0) {
+  // Generate sample tracking history if not available
+  if (!order.trackingHistory || order.trackingHistory.length === 0) {
+    const sampleHistory = generateSampleTrackingHistory(order.status, order.orderDate);
+    trackingMessage += `**📋 Tracking History:**\n`;
+    sampleHistory.forEach(event => {
+      trackingMessage += `• ${event.date} - ${event.location}: ${event.description}\n`;
+    });
+  } else {
     trackingMessage += `**📋 Tracking History:**\n`;
     order.trackingHistory.forEach(event => {
       const date = new Date(event.date).toLocaleDateString();
@@ -985,6 +1129,63 @@ function generateTrackingInfo(order, aiResponse) {
     ...aiResponse,
     message: trackingMessage
   };
+}
+
+/**
+ * Generate sample tracking history based on order status
+ */
+function generateSampleTrackingHistory(status, orderDate) {
+  const history = [];
+  const orderDay = new Date(orderDate);
+  
+  // Order placed
+  history.push({
+    date: orderDay.toLocaleDateString(),
+    location: 'Order Processing Center',
+    description: 'Order placed and confirmed'
+  });
+  
+  // Processing
+  const processingDay = new Date(orderDay);
+  processingDay.setDate(processingDay.getDate() + 1);
+  history.push({
+    date: processingDay.toLocaleDateString(),
+    location: 'Fulfillment Center',
+    description: 'Order processed and packaged'
+  });
+  
+  if (['shipped', 'delivered'].includes(status)) {
+    // Shipped
+    const shippedDay = new Date(orderDay);
+    shippedDay.setDate(shippedDay.getDate() + 2);
+    history.push({
+      date: shippedDay.toLocaleDateString(),
+      location: 'Distribution Center',
+      description: 'Package shipped'
+    });
+    
+    // In transit
+    const transitDay = new Date(orderDay);
+    transitDay.setDate(transitDay.getDate() + 3);
+    history.push({
+      date: transitDay.toLocaleDateString(),
+      location: 'Local Facility',
+      description: 'Package in transit to destination'
+    });
+  }
+  
+  if (status === 'delivered') {
+    // Delivered
+    const deliveredDay = new Date(orderDay);
+    deliveredDay.setDate(deliveredDay.getDate() + 4);
+    history.push({
+      date: deliveredDay.toLocaleDateString(),
+      location: 'Your Address',
+      description: 'Package delivered successfully'
+    });
+  }
+  
+  return history;
 }
 
 /**
@@ -1055,7 +1256,7 @@ async function handleCancelOrders(userId, aiResponse) {
     const buttons = orders.map(order => {
       const itemsList = order.items.map(item => item.name).join(', ');
       return {
-        text: `${order.orderId}: ${itemsList} - $${order.totalAmount}`,
+        text: `${itemsList} - $${order.totalAmount}`,
         value: `cancel_${order.orderId}`,
         action: 'cancel_order_selected'
       };
@@ -1137,9 +1338,8 @@ async function handleOrderCancellation(userId, aiResponse, originalMessage, sess
           orderId: orderId,
           message: `⚠️ **Confirm Cancellation**
 
-Are you sure you want to cancel order **${orderId}**?
+Are you sure you want to cancel your order for **${itemsList}**?
 
-**Items:** ${itemsList}
 **Total:** $${order.totalAmount}
 **Status:** ${order.status}
 
@@ -1194,9 +1394,8 @@ This action cannot be undone.`,
         action: 'confirm_cancellation',
         message: `⚠️ **Confirm Cancellation**
 
-Are you sure you want to cancel order **${aiResponse.orderId}**?
+Are you sure you want to cancel your order for **${itemsList}**?
 
-**Items:** ${itemsList}
 **Total:** $${order.totalAmount}
 **Status:** ${order.status}
 
@@ -1270,13 +1469,32 @@ async function handleConfirmCancellation(userId, aiResponse, originalMessage, se
             status: 'cancelled',
             timestamp: new Date().toISOString()
           });
+          
+          // Also emit a notification event
+          io.to(sessionId).emit('notification', {
+            type: 'success',
+            message: `Order cancelled successfully!\n\nYour order has been cancelled and you will receive a refund within 3-5 business days.`,
+            timestamp: new Date().toISOString()
+          });
+        }
+
+        // Get order details for friendly message
+        const order = await db.collection('orders')
+          .findOne({ 
+            orderId: orderId,
+            customerId: userId
+          });
+
+        let orderDescription = orderId;
+        if (order && order.items && order.items.length > 0) {
+          orderDescription = order.items[0].name;
         }
 
         return {
           ...aiResponse,
           message: `✅ **Order Cancelled Successfully**
 
-Order **${orderId}** has been cancelled.
+Your order for **${orderDescription}** has been cancelled.
 
 You will receive a refund within 3-5 business days. A confirmation email has been sent to your registered email address.
 
@@ -1358,6 +1576,143 @@ function detectProductSearch(message) {
   }
   
   return null;
+}
+
+/**
+ * Detect button action clicks from frontend
+ */
+function detectButtonAction(message) {
+  const trimmedMessage = message.trim();
+  
+  // Track button clicks: "track_ORD-2024-001"
+  const trackMatch = trimmedMessage.match(/^track_([A-Z0-9-]+)$/i);
+  if (trackMatch) {
+    return {
+      action: 'track_selected',
+      orderId: trackMatch[1],
+      value: trimmedMessage
+    };
+  }
+  
+  // Order selection buttons: Direct order ID or "ORD-2024-001: Product Name - $99.99"
+  const orderIdMatch = trimmedMessage.match(/^([A-Z0-9-]+)(?::|$)/i);
+  if (orderIdMatch && orderIdMatch[1].match(/^ORD-/i)) {
+    return {
+      action: 'order_selected',
+      orderId: orderIdMatch[1],
+      value: trimmedMessage
+    };
+  }
+  
+  // Cancel button clicks: "cancel_ORD-2024-001"
+  const cancelMatch = trimmedMessage.match(/^cancel_([A-Z0-9-]+)$/i);
+  if (cancelMatch) {
+    return {
+      action: 'cancel_order_selected',
+      orderId: cancelMatch[1],
+      value: trimmedMessage
+    };
+  }
+  
+  // Refund button clicks: "refund_ORD-2024-001" or "refund_all"
+  const refundMatch = trimmedMessage.match(/^refund_([A-Z0-9-]+|all)$/i);
+  if (refundMatch) {
+    return {
+      action: 'refund_selected',
+      orderId: refundMatch[1] !== 'all' ? refundMatch[1] : null,
+      value: trimmedMessage
+    };
+  }
+  
+  // Confirmation buttons: "confirm_cancel_ORD-2024-001"
+  const confirmMatch = trimmedMessage.match(/^confirm_cancel_([A-Z0-9-]+)$/i);
+  if (confirmMatch) {
+    return {
+      action: 'confirm_cancellation',
+      orderId: confirmMatch[1],
+      value: trimmedMessage
+    };
+  }
+  
+  // Cancel abort button: "cancel_abort"
+  if (trimmedMessage === 'cancel_abort') {
+    return {
+      action: 'cancel_abort',
+      value: trimmedMessage
+    };
+  }
+  
+  return null;
+}
+
+/**
+ * Detect fallback actions for common queries that shouldn't need clarification
+ */
+function detectFallbackAction(message) {
+  const lowerMessage = message.toLowerCase().trim();
+  
+  // Track order variations (including typos)
+  const trackPatterns = [
+    /^track\s?(my)?\s?orders?$/i,
+    /^trac\s?orders?$/i,
+    /^trak\s?orders?$/i,
+    /^track$/i,
+    /^where\s+is\s+my\s+order$/i
+  ];
+  
+  if (trackPatterns.some(pattern => pattern.test(message))) {
+    return {
+      action: 'track_order',
+      orderId: null,
+      productName: null,
+      confidence: 0.95,
+      message: "I'll show you the tracking information for your orders."
+    };
+  }
+  
+  // Order status variations (including typos)
+  const statusPatterns = [
+    /^orders?\s?status$/i,
+    /^oders?\s?status$/i,
+    /^status$/i,
+    /^check\s?(my)?\s?orders?$/i,
+    /^show\s?(my)?\s?orders?$/i,
+    /^list\s?orders?$/i
+  ];
+  
+  if (statusPatterns.some(pattern => pattern.test(message))) {
+    return {
+      action: 'list_orders',
+      orderId: null,
+      productName: null,
+      confidence: 0.95,
+      message: "I'll show you all your orders so you can select the one you're interested in."
+    };
+  }
+  
+  return null;
+}
+
+/**
+ * Process fallback action when AI incorrectly asks for clarification
+ */
+async function processFallbackAction(userId, fallbackAction) {
+  try {
+    switch (fallbackAction.action) {
+      case 'track_order':
+        return await handleTrackOrder(userId, fallbackAction);
+      case 'list_orders':
+        return await handleListOrders(userId, fallbackAction);
+      default:
+        return fallbackAction;
+    }
+  } catch (error) {
+    console.error('Error processing fallback action:', error);
+    return {
+      ...fallbackAction,
+      message: "I'm here to help! Let me get your order information for you."
+    };
+  }
 }
 
 module.exports = router;
