@@ -136,6 +136,9 @@ body {
   height: 100%;
   display: flex;
   flex-direction: column;
+  max-width: 800px;
+  width: 100%;
+  margin: 0 auto;
 }
 
 .order-status-container h3 {

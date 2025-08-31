@@ -2,38 +2,28 @@ const mongoose = require('mongoose');
 
 const connectDB = async () => {
   try {
-    // First try with authentication if MONGODB_URI is provided
-    let connectionString = process.env.MONGODB_URI;
+    // Primary connection string with authentication for Docker setup
+    const primaryURI = 'mongodb://admin:password123@localhost:27017/poc-rp-db?authSource=admin';
     
-    if (!connectionString) {
-      connectionString = 'mongodb://admin:password123@localhost:27017/poc-rp-db?authSource=admin';
-      console.log('Using default MongoDB connection with authentication');
-    }
-
-    const conn = await mongoose.connect(connectionString, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-    });
-
-    console.log(`MongoDB Connected: ${conn.connection.host}`);
-
-    // Test if we can actually perform operations (authentication check)
     try {
-      await mongoose.connection.db.admin().ping();
-      console.log('MongoDB authentication successful');
-    } catch (authError) {
-      console.warn('MongoDB authentication failed, trying without auth...');
-      
-      // Close current connection
-      await mongoose.connection.close();
-      
-      // Try connecting without authentication as fallback
-      const fallbackConn = await mongoose.connect('mongodb://localhost:27017/poc-rp-db', {
+      const conn = await mongoose.connect(primaryURI, {
         useNewUrlParser: true,
         useUnifiedTopology: true,
       });
+
+      console.log(`MongoDB Connected: ${conn.connection.host}`);
+    } catch (authError) {
+      console.log('Database connection failed:', authError.message);
+      console.log('Trying fallback connection without authentication...');
       
-      console.log(`MongoDB Connected (no auth): ${fallbackConn.connection.host}`);
+      // Fallback connection without authentication
+      const fallbackURI = 'mongodb://localhost:27017/poc-rp-db';
+      const conn = await mongoose.connect(fallbackURI, {
+        useNewUrlParser: true,
+        useUnifiedTopology: true,
+      });
+
+      console.log(`MongoDB Connected (fallback): ${conn.connection.host}`);
     }
 
     // Handle connection events
@@ -54,19 +44,9 @@ const connectDB = async () => {
 
   } catch (error) {
     console.error('Database connection failed:', error);
-    console.log('Trying fallback connection without authentication...');
-    
-    try {
-      // Final fallback - simple connection
-      const fallbackConn = await mongoose.connect('mongodb://localhost:27017/poc-rp-db', {
-        useNewUrlParser: true,
-        useUnifiedTopology: true,
-      });
-      console.log(`MongoDB Connected (fallback): ${fallbackConn.connection.host}`);
-    } catch (fallbackError) {
-      console.error('All MongoDB connection attempts failed:', fallbackError);
-      process.exit(1);
-    }
+    console.log('Please make sure MongoDB is running on localhost:27017');
+    console.log('You can start it with Docker: docker-compose up -d mongodb');
+    process.exit(1);
   }
 };
 

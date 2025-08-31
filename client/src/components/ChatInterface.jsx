@@ -11,7 +11,8 @@ const ChatInterface = () => {
     error,
     sendMessage,
     clearConversation,
-    orderStatus
+    orderStatus,
+    dispatch
   } = useChat();
 
   const { showSuccess, showError, showInfo } = useNotification();
@@ -19,40 +20,85 @@ const ChatInterface = () => {
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef(null);
+  const hasAddedGreeting = useRef(false);
+  const notifiedMessageIds = useRef(new Set()); // Track which messages we've shown notifications for
 
-  // Show notifications for connection status changes
+  // Add initial greeting when component mounts
   useEffect(() => {
-    if (isConnected) {
+    // Only add greeting if no messages exist at all AND we haven't added greeting yet
+    if (messages.length === 0 && !hasAddedGreeting.current && dispatch) {
+      const greetingMessage = {
+        role: 'assistant',
+        content: 'Hello! I am Order Buddy. How can I help you today?',
+        timestamp: new Date().toISOString(),
+        metadata: {
+          isGreeting: true
+        }
+      };
+      
+      // Add greeting message using dispatch
+      dispatch({ type: 'ADD_MESSAGE', payload: greetingMessage });
+      hasAddedGreeting.current = true;
+    }
+  }, [messages.length, dispatch]); // Add messages.length as dependency
+
+  // Show connection notification only once per session
+  useEffect(() => {
+    const hasShownNotification = sessionStorage.getItem('connectionNotificationShown');
+    if (isConnected && !hasShownNotification) {
       showSuccess('🔗 Connected to server', 3000);
+      sessionStorage.setItem('connectionNotificationShown', 'true');
     }
   }, [isConnected, showSuccess]);
 
-  // Show notifications based on message metadata
+  // Show notifications only for new messages with specific events
   useEffect(() => {
     if (messages.length > 0) {
       const lastMessage = messages[messages.length - 1];
       
-      // Show notifications for order updates and important events
-      if (lastMessage.metadata?.orderUpdate) {
-        showInfo('📦 Order status updated!', 4000);
+      // Skip if we've already shown notification for this message
+      if (notifiedMessageIds.current.has(lastMessage.id)) {
+        return;
       }
       
-      if (lastMessage.metadata?.cached) {
-        showInfo('⚡ Quick response from cache', 2000);
+      // Skip notifications for greeting messages
+      if (lastMessage.metadata?.isGreeting) {
+        return;
       }
       
-      if (lastMessage.metadata?.error) {
-        showError('❌ ' + lastMessage.content, 5000);
-      }
-
-      // Show notifications for successful actions
+      // Only show notifications for assistant messages with specific events
       if (lastMessage.role === 'assistant' && lastMessage.content) {
+        let shouldNotify = false;
+        
+        // Order cancellation success
         if (lastMessage.content.includes('successfully cancelled')) {
-          showSuccess('✅ Order cancelled successfully!\n\nYou will receive a refund within 3-5 business days.', 6000);
-        } else if (lastMessage.content.includes('has been shipped')) {
-          showInfo('📦 Order shipped!\n\nYour order is on its way to you.', 5000);
-        } else if (lastMessage.content.includes('delivered')) {
-          showSuccess('✅ Order delivered!\n\nEnjoy your purchase!', 5000);
+          showSuccess('✅ Order cancelled successfully!', 5000);
+          shouldNotify = true;
+        }
+        // Order shipped
+        else if (lastMessage.content.includes('has been shipped')) {
+          showInfo('📦 Order shipped!', 4000);
+          shouldNotify = true;
+        }
+        // Order delivered
+        else if (lastMessage.content.includes('delivered')) {
+          showSuccess('✅ Order delivered!', 4000);
+          shouldNotify = true;
+        }
+        // Order status update
+        else if (lastMessage.metadata?.orderUpdate) {
+          showInfo('📦 Order status updated!', 3000);
+          shouldNotify = true;
+        }
+        // Error messages
+        else if (lastMessage.metadata?.error) {
+          showError('❌ ' + lastMessage.content, 5000);
+          shouldNotify = true;
+        }
+        
+        // Mark this message as notified if we showed a notification
+        if (shouldNotify) {
+          notifiedMessageIds.current.add(lastMessage.id);
         }
       }
     }
@@ -69,13 +115,8 @@ const ChatInterface = () => {
 
     setIsLoading(true);
     try {
-      const result = await sendMessage(inputMessage);
-      if (result) {
-        // Message sent successfully - could show a subtle notification
-        if (result.metadata?.cached) {
-          showInfo('⚡ Fast response from cache!', 2000);
-        }
-      }
+      await sendMessage(inputMessage);
+      // No need to show notification here - it will be handled by the message useEffect
     } catch (error) {
       showError('Failed to send message. Please try again.', 4000);
     }
@@ -90,19 +131,46 @@ const ChatInterface = () => {
     }
   };
 
-  // Suggested messages for quick interaction
-  const suggestedMessages = [
-    'Show me my orders',
-    'Order status',
-    'What is my refund status?',
-    'Track my order',
-    'Cancel order',
-    'Cancel my order ORD-2024-001',
-    'Status of Bluetooth Earphones'
+  // Quick action buttons
+  const quickActions = [
+    { 
+      id: 'cancel-order', 
+      text: '❌ Cancel Order', 
+      message: 'I want to cancel my order',
+      color: '#ef4444'
+    },
+    { 
+      id: 'track-order', 
+      text: '📦 Track Order', 
+      message: 'Track my order',
+      color: '#3b82f6'
+    },
+    { 
+      id: 'refund-status', 
+      text: '💰 Refund Status', 
+      message: 'What is my refund status?',
+      color: '#f59e0b'
+    },
+    { 
+      id: 'show-orders', 
+      text: '📋 Show All Orders', 
+      message: 'Show me my orders',
+      color: '#10b981'
+    },
+    { 
+      id: 'customer-executive', 
+      text: '👨‍💼 Connect Executive', 
+      message: 'I want to speak with a customer executive',
+      color: '#8b5cf6'
+    }
   ];
 
-  const handleSuggestedMessage = (message) => {
-    setInputMessage(message);
+  const handleQuickAction = async (action) => {
+    if (isLoading) return;
+    
+    setIsLoading(true);
+    await sendMessage(action.message);
+    setIsLoading(false);
   };
 
   const handleButtonClick = async (button) => {
@@ -172,29 +240,8 @@ const ChatInterface = () => {
 
       {/* Messages Area */}
       <div className="messages-container">
-        {messages.length === 0 ? (
-          <div className="welcome-message">
-            <div className="welcome-icon">🤖</div>
-            <h3>Welcome to Order Management Assistant</h3>
-            <p>I'm here to help you with order tracking, cancellations, and general inquiries. What can I help you with today?</p>
-            <div className="suggested-messages">
-              <h4>Try these examples:</h4>
-              <div className="suggested-grid">
-                {suggestedMessages.map((message, index) => (
-                  <button
-                    key={index}
-                    onClick={() => handleSuggestedMessage(message)}
-                    className="suggested-message-btn"
-                  >
-                    {message}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="messages-list">
-            {messages.map((message) => (
+        <div className="messages-list">
+          {messages.map((message) => (
               <div key={message.id} className={`message ${message.role}`}>
                 <div className="message-header">
                   <span className="message-icon">
@@ -297,7 +344,6 @@ const ChatInterface = () => {
             
             <div ref={messagesEndRef} />
           </div>
-        )}
       </div>
 
       {/* Error Display */}
@@ -307,6 +353,23 @@ const ChatInterface = () => {
           <button onClick={() => window.location.reload()}>Retry</button>
         </div>
       )}
+
+      {/* Quick Actions - above input */}
+      <div className="quick-actions-compact">
+        <div className="quick-actions-grid">
+          {quickActions.map((action) => (
+            <button
+              key={action.id}
+              onClick={() => handleQuickAction(action)}
+              disabled={isLoading || !isConnected}
+              className="quick-action-btn-compact"
+              style={{ '--action-color': action.color }}
+            >
+              {action.text}
+            </button>
+          ))}
+        </div>
+      </div>
 
       {/* Input Area */}
       <form onSubmit={handleSubmit} className="input-form">
