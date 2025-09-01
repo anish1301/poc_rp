@@ -3,6 +3,7 @@ import { ChatProvider } from './context/ChatContext';
 import { NotificationProvider } from './context/NotificationContext';
 import ChatInterface from './components/ChatInterface';
 import OrderStatus from './components/OrderStatus';
+import SparklesCore from './components/SparklesCore';
 import './App.css';
 
 function App() {
@@ -10,6 +11,17 @@ function App() {
 
   return (
     <div className="App">
+      {/* Animated Particles Background */}
+      <SparklesCore
+        background="#000000"
+        minSize={0.3}
+        maxSize={0.8}
+        particleDensity={200}
+        className="sparkles-background"
+        particleColor="#ffffff"
+        speed={1}
+      />
+      
       <NotificationProvider>
         <ChatProvider>
           <div className="app-container">
