@@ -11,62 +11,92 @@ const OrderStatus = () => {
   // Fetch user's existing orders on mount - prevent infinite loop with useRef
   const hasInitiallyFetched = useRef(false);
   
-  useEffect(() => {
-    const fetchUserOrders = async () => {
-      if (hasInitiallyFetched.current) return; // Prevent multiple fetches
+  // Function to fetch fresh orders from database (bypassing cache)
+  const fetchFreshOrders = useCallback(async (showLoading = false) => {
+    try {
+      // Add cache-busting timestamp to ensure fresh data
+      const timestamp = Date.now();
+      console.log('🔄 Fetching fresh orders for userId:', userId);
+      const response = await fetch(`/api/orders/user/${userId}?limit=10&fresh=true&t=${timestamp}`);
+      console.log('📡 Response status:', response.status, response.ok);
       
-      try {
-        const response = await fetch(`/api/orders/user/${userId}?limit=10`);
-        if (response.ok) {
-          const data = await response.json();
-          console.log('User orders:', data.orders);
+      if (response.ok) {
+        const data = await response.json();
+        console.log('📦 Fresh user orders response:', data);
+        console.log('📋 Fresh user orders from database:', data.orders);
+        
+        // Add fresh orders to tracking and update the orderStatus
+        if (data.orders && data.orders.length > 0) {
+          console.log('Processing', data.orders.length, 'fresh orders');
           
-          // Add existing orders to tracking and update the orderStatus
-          if (data.orders && data.orders.length > 0) {
-            data.orders.forEach(order => {
-              console.log('Found existing order:', order.orderId, order.status);
-              
-              // Update the order status in the chat context
-              if (updateOrderStatus) {
-                updateOrderStatus(order.orderId, order.status);
-              }
-              
-              // Set the order details directly
-              setOrderDetails(prev => ({
-                ...prev,
-                [order.orderId]: {
-                  orderData: {
-                    orderId: order.orderId,
-                    totalAmount: order.totalAmount,
-                    orderDate: order.orderDate,
-                    items: order.items,
-                    shippingAddress: order.shippingAddress,
-                    status: order.status
-                  },
-                  cancellationEligible: ['pending', 'confirmed'].includes(order.status),
-                  currentStatus: order.status,
-                  lastFetched: Date.now(),
-                  metadata: {
-                    fromCache: false,
-                    responseTime: 0
-                  }
-                }
-              }));
+          // Build the new order details object
+          const newOrderDetails = {};
+          
+          data.orders.forEach(order => {
+            console.log('Processing fresh order:', {
+              orderId: order.orderId, 
+              status: order.status,
+              totalAmount: order.totalAmount,
+              items: order.items
             });
-            hasInitiallyFetched.current = true;
-          }
+            
+            // Update the order status in the chat context
+            if (updateOrderStatus) {
+              updateOrderStatus(order.orderId, order.status);
+            }
+            
+            // Build the fresh order details
+            newOrderDetails[order.orderId] = {
+              orderData: {
+                orderId: order.orderId,
+                totalAmount: order.totalAmount,
+                orderDate: order.orderDate,
+                items: order.items,
+                shippingAddress: order.shippingAddress,
+                status: order.status,
+                customerName: order.customerName,
+                customerEmail: order.customerEmail
+              },
+              cancellationEligible: ['pending', 'confirmed', 'processing'].includes(order.status),
+              currentStatus: order.status,
+              lastFetched: Date.now(),
+              metadata: {
+                fromCache: false,
+                responseTime: 0,
+                fresh: true
+              }
+            };
+          });
+          
+          // Set all order details at once
+          console.log('💾 Setting fresh order details for orderIds:', Object.keys(newOrderDetails));
+          console.log('💾 Fresh order details data:', newOrderDetails);
+          setOrderDetails(newOrderDetails);
         } else {
-          console.error('Failed to fetch user orders:', response.status, response.statusText);
+          console.log('No fresh orders found');
+          // Clear order details if no orders found
+          setOrderDetails({});
         }
-      } catch (error) {
-        console.error('Error fetching user orders:', error);
+      } else {
+        console.error('Failed to fetch fresh user orders:', response.status, response.statusText);
+      }
+    } catch (error) {
+      console.error('Error fetching fresh user orders:', error);
+    }
+  }, [userId, updateOrderStatus]);
+  
+  useEffect(() => {
+    const initializeFreshOrders = async () => {
+      if (hasInitiallyFetched.current) return; // Prevent multiple fetches
+      hasInitiallyFetched.current = true;
+      
+      if (userId) {
+        await fetchFreshOrders(false); // Initial load without showing refresh spinner
       }
     };
 
-    if (userId) {
-      fetchUserOrders();
-    }
-  }, [userId, updateOrderStatus]);
+    initializeFreshOrders();
+  }, [userId, fetchFreshOrders]);
 
   // Handle seeding test orders
   const handleSeedOrders = async () => {
@@ -75,6 +105,36 @@ const OrderStatus = () => {
       await seedTestOrders();
     } catch (error) {
       console.error('Error seeding orders:', error);
+    } finally {
+      setSeedingOrders(false);
+    }
+  };
+
+  // Add a single test order directly to database
+  const addTestOrder = async () => {
+    setSeedingOrders(true);
+    try {
+      const response = await fetch('/api/orders/add-test-order', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          customerId: 'CUST-001'
+        })
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        console.log('Test order added:', data);
+        
+        // Refresh the orders list to show the new order
+        await fetchFreshOrders(false);
+      } else {
+        console.error('Failed to add test order:', response.status);
+      }
+    } catch (error) {
+      console.error('Error adding test order:', error);
     } finally {
       setSeedingOrders(false);
     }
@@ -255,7 +315,38 @@ const OrderStatus = () => {
 
   return (
     <div className="order-status-container">
-      <h3>🛒 Order Tracking</h3>
+      <h3 style={{ marginBottom: '20px' }}>🛒 Order Tracking</h3>
+      
+      {/* Test Status Updates Section */}
+      <div className="test-section" style={{ 
+        background: '#f8f9fa', 
+        padding: '15px', 
+        borderRadius: '8px', 
+        marginBottom: '20px',
+        border: '1px solid #e9ecef'
+      }}>
+        <h4 style={{ marginBottom: '10px', color: '#495057' }}>🧪 Test Orders</h4>
+        <p style={{ fontSize: '14px', color: '#6c757d', marginBottom: '15px' }}>
+          Add test orders to see how the system works:
+        </p>
+        
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+          <button 
+            onClick={addTestOrder}
+            disabled={seedingOrders}
+            style={{ 
+              background: seedingOrders ? '#6c757d' : '#ffc107', 
+              color: 'white', 
+              border: 'none', 
+              padding: '8px 16px', 
+              borderRadius: '4px', 
+              cursor: seedingOrders ? 'not-allowed' : 'pointer' 
+            }}
+          >
+            {seedingOrders ? '⏳ Adding...' : '➕ Add Test Order'}
+          </button>
+        </div>
+      </div>
       
       <div className="orders-list">
         {allOrderIds.map((orderId) => {
@@ -413,29 +504,6 @@ const OrderStatus = () => {
             </div>
           );
         })}
-      </div>
-      
-      {/* Summary Stats */}
-      <div className="order-stats">
-        <div className="stat">
-          <span className="stat-value">{allOrderIds.length}</span>
-          <span className="stat-label">Orders Tracked</span>
-        </div>
-        <div className="stat">
-          <span className="stat-value">
-            {allOrderIds.filter(orderId => {
-              const status = orderStatus[orderId] || orderDetails[orderId]?.currentStatus || 'unknown';
-              return status === 'cancelled' || status === 'pending_cancellation';
-            }).length}
-          </span>
-          <span className="stat-label">Cancellations</span>
-        </div>
-        <div className="stat">
-          <span className="stat-value">
-            {Object.keys(orderDetails).length}
-          </span>
-          <span className="stat-label">Details Loaded</span>
-        </div>
       </div>
     </div>
   );

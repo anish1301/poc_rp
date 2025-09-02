@@ -247,23 +247,40 @@ export const ChatProvider = ({ children }) => {
         }
       });
 
-      // Update order status if relevant
-      if (aiResponse.orderId) {
-        let orderStatus = 'unknown';
+      // Update order status if relevant and we can determine a meaningful status
+      if (aiResponse.orderId && aiResponse.action) {
+        let orderStatus = null;
         
         // Determine status based on AI response action
         if (aiResponse.action === 'order_cancellation') {
           orderStatus = 'pending_cancellation';
+        } else if (aiResponse.action === 'order_cancelled') {
+          orderStatus = 'cancelled';
         } else if (aiResponse.action === 'status_check') {
-          // Try to extract status from the response message
-          const statusMatch = aiResponse.message.match(/status[:\s]+(\w+)/i);
-          orderStatus = statusMatch ? statusMatch[1].toLowerCase() : 'unknown';
+          // Try to extract status from the response message using better patterns
+          const statusPatterns = [
+            /status[:\s]+(\w+)/i,
+            /is currently (\w+)/i,
+            /has been (\w+)/i,
+            /order (\w+)/i
+          ];
+          
+          for (const pattern of statusPatterns) {
+            const match = aiResponse.message.match(pattern);
+            if (match && match[1] && !['check', 'your', 'the', 'and', 'with'].includes(match[1].toLowerCase())) {
+              orderStatus = match[1].toLowerCase();
+              break;
+            }
+          }
         }
         
-        dispatch({
-          type: actionTypes.UPDATE_ORDER_STATUS,
-          payload: { orderId: aiResponse.orderId, status: orderStatus }
-        });
+        // Only update if we found a meaningful status
+        if (orderStatus) {
+          dispatch({
+            type: actionTypes.UPDATE_ORDER_STATUS,
+            payload: { orderId: aiResponse.orderId, status: orderStatus }
+          });
+        }
       }
 
       return aiResponse;

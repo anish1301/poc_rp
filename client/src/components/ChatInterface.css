@@ -239,20 +239,18 @@
   font-size: 0.75rem;
 }
 
-.ai-metadata {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 1rem;
-  margin-top: 0.75rem;
-  padding-top: 0.75rem;
-  border-top: 1px solid #f1f5f9;
-  font-size: 0.75rem;
+.message-text {
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-wrap: break-word;
 }
 
-.confidence-indicator,
-.risk-indicator,
-.response-time {
+.message-text strong {
   font-weight: 600;
+}
+
+.message-text em {
+  font-style: italic;
 }
 
 .input-form {

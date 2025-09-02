@@ -12,6 +12,7 @@ const ChatInterface = () => {
     sendMessage,
     clearConversation,
     orderStatus,
+    socket,
     dispatch
   } = useChat();
 
@@ -66,32 +67,51 @@ const ChatInterface = () => {
         return;
       }
       
-      // Only show notifications for assistant messages with specific events
+      // Only show notifications for assistant messages with ACTUAL state changes confirmed by metadata
+      // This prevents notifications from showing when just asking questions about orders
       if (lastMessage.role === 'assistant' && lastMessage.content) {
         let shouldNotify = false;
         
-        // Order cancellation success
-        if (lastMessage.content.includes('successfully cancelled')) {
+        // ONLY show notifications when there are actual state changes confirmed by metadata
+        // This prevents notifications from showing when just asking questions about orders
+        
+        // Order cancelled - only when confirmed via metadata (actual cancellation happened)
+        if (lastMessage.metadata?.orderCancelled || 
+            lastMessage.metadata?.action === 'order_cancelled' ||
+            (lastMessage.metadata?.confirmed && lastMessage.content.toLowerCase().includes('cancelled successfully'))) {
           showSuccess('✅ Order cancelled successfully!', 5000);
           shouldNotify = true;
         }
-        // Order shipped
-        else if (lastMessage.content.includes('has been shipped')) {
-          showInfo('📦 Order shipped!', 4000);
+        // Order status changed - only when metadata confirms actual state change
+        else if (lastMessage.metadata?.orderStatusChanged || lastMessage.metadata?.stateChange) {
+          const status = lastMessage.metadata?.newStatus || 'updated';
+          if (status === 'shipped') {
+            showInfo('📦 Order shipped!', 4000);
+          } else if (status === 'delivered') {
+            showSuccess('✅ Order delivered!', 4000);
+          } else if (status === 'cancelled') {
+            showSuccess('✅ Order cancelled!', 4000);
+          } else {
+            showInfo('📦 Order status updated!', 3000);
+          }
           shouldNotify = true;
         }
-        // Order delivered
-        else if (lastMessage.content.includes('delivered')) {
-          showSuccess('✅ Order delivered!', 4000);
+        // Real-time WebSocket notifications (from actual backend state changes)
+        else if (lastMessage.metadata?.websocketEvent || lastMessage.metadata?.realTimeUpdate) {
+          const eventType = lastMessage.metadata?.eventType;
+          if (eventType === 'order_cancelled') {
+            showSuccess('✅ Order cancelled successfully!', 4000);
+          } else if (eventType === 'order_shipped') {
+            showInfo('📦 Order shipped!', 4000);
+          } else if (eventType === 'order_delivered') {
+            showSuccess('✅ Order delivered!', 4000);
+          } else {
+            showInfo('📦 Order updated!', 3000);
+          }
           shouldNotify = true;
         }
-        // Order status update
-        else if (lastMessage.metadata?.orderUpdate) {
-          showInfo('📦 Order status updated!', 3000);
-          shouldNotify = true;
-        }
-        // Error messages
-        else if (lastMessage.metadata?.error) {
+        // Error messages - only if metadata indicates it's an actual error (not just asking questions)
+        else if (lastMessage.metadata?.error && lastMessage.metadata?.isError) {
           showError('❌ ' + lastMessage.content, 5000);
           shouldNotify = true;
         }
@@ -104,10 +124,98 @@ const ChatInterface = () => {
     }
   }, [messages, showSuccess, showError, showInfo]);
 
+  // Listen for real-time order status updates via WebSocket
+  useEffect(() => {
+    if (socket) {
+      // Listen for order cancellation events
+      const handleOrderCancelled = (data) => {
+        console.log('WebSocket: Order cancelled:', data);
+        showSuccess(`✅ Order ${data.orderId} cancelled successfully!`, 5000);
+      };
+
+      // Listen for order shipped events  
+      const handleOrderShipped = (data) => {
+        console.log('WebSocket: Order shipped:', data);
+        showInfo(`📦 Order ${data.orderId} has been shipped!`, 4000);
+      };
+
+      // Listen for order delivered events
+      const handleOrderDelivered = (data) => {
+        console.log('WebSocket: Order delivered:', data);
+        showSuccess(`✅ Order ${data.orderId} has been delivered!`, 4000);
+      };
+
+      // Listen for generic order status updates
+      const handleOrderStatusUpdate = (data) => {
+        console.log('WebSocket: Order status updated:', data);
+        const { orderId, oldStatus, newStatus } = data;
+        
+        if (newStatus === 'shipped') {
+          showInfo(`📦 Order ${orderId} has been shipped!`, 4000);
+        } else if (newStatus === 'delivered') {
+          showSuccess(`✅ Order ${orderId} has been delivered!`, 4000);
+        } else if (newStatus === 'cancelled') {
+          showSuccess(`✅ Order ${orderId} has been cancelled!`, 4000);
+        } else if (newStatus === 'confirmed') {
+          showInfo(`✅ Order ${orderId} has been confirmed!`, 3000);
+        } else if (newStatus === 'processing') {
+          showInfo(`🔄 Order ${orderId} is now being processed!`, 3000);
+        } else {
+          showInfo(`📦 Order ${orderId} status updated: ${oldStatus} → ${newStatus}`, 3000);
+        }
+      };
+
+      // Add event listeners
+      socket.on('order_cancelled', handleOrderCancelled);
+      socket.on('order_shipped', handleOrderShipped);
+      socket.on('order_delivered', handleOrderDelivered);
+      socket.on('order_status_update', handleOrderStatusUpdate);
+
+      // Cleanup listeners on unmount
+      return () => {
+        socket.off('order_cancelled', handleOrderCancelled);
+        socket.off('order_shipped', handleOrderShipped);
+        socket.off('order_delivered', handleOrderDelivered);
+        socket.off('order_status_update', handleOrderStatusUpdate);
+      };
+    }
+  }, [socket, showSuccess, showError, showInfo]);
+
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isTyping]);
+
+  const formatMarkdown = (text) => {
+    // Convert **text** to bold
+    return text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+  };
+
+  const formatMessageContent = (content) => {
+    return content.split('\n').map((line, index) => (
+      <React.Fragment key={index}>
+        <span dangerouslySetInnerHTML={{ __html: formatMarkdown(line) }} />
+        {index < content.split('\n').length - 1 && <br />}
+      </React.Fragment>
+    ));
+  };
+
+  const getOrderStatusDisplay = (status) => {
+    if (!status || status === 'unknown') return null;
+    
+    const statusDisplayMap = {
+      'pending': 'Pending',
+      'confirmed': 'Confirmed', 
+      'processing': 'Processing',
+      'shipped': 'Shipped',
+      'delivered': 'Delivered',
+      'cancelled': 'Cancelled',
+      'refund_pending': 'Refund Pending',
+      'refunded': 'Refunded'
+    };
+    
+    return statusDisplayMap[status] || status.charAt(0).toUpperCase() + status.slice(1).replace('_', ' ');
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -204,19 +312,6 @@ const ChatInterface = () => {
     }
   };
 
-  const getConfidenceColor = (confidence) => {
-    if (confidence >= 0.8) return '#4CAF50'; // Green
-    if (confidence >= 0.6) return '#FF9800'; // Orange
-    return '#F44336'; // Red
-  };
-
-  const getRiskScoreColor = (riskScore) => {
-    if (riskScore <= 25) return '#4CAF50'; // Green
-    if (riskScore <= 50) return '#FF9800'; // Orange
-    if (riskScore <= 75) return '#FF5722'; // Deep Orange
-    return '#F44336'; // Red
-  };
-
   return (
     <div className="chat-container">
       {/* Header */}
@@ -265,7 +360,10 @@ const ChatInterface = () => {
                 </div>
                 
                 <div className="message-content">
-                  {message.content}
+                  {/* Format message content with proper line breaks and Markdown formatting */}
+                  <div className="message-text">
+                    {formatMessageContent(message.content)}
+                  </div>
                   
                   {/* Clickable buttons for order selection */}
                   {message.buttons && message.showAsButtons && (
@@ -287,37 +385,11 @@ const ChatInterface = () => {
                   {message.metadata?.orderId && (
                     <div className="order-info">
                       <strong>Order ID:</strong> {message.metadata.orderId}
-                      {orderStatus[message.metadata.orderId] && (
+                      {orderStatus[message.metadata.orderId] && 
+                       getOrderStatusDisplay(orderStatus[message.metadata.orderId]) && (
                         <span className={`order-status ${orderStatus[message.metadata.orderId]}`}>
-                          - {orderStatus[message.metadata.orderId].replace('_', ' ')}
+                          - {getOrderStatusDisplay(orderStatus[message.metadata.orderId])}
                         </span>
-                      )}
-                    </div>
-                  )}
-                  
-                  {/* AI Confidence and Risk Score */}
-                  {message.role === 'assistant' && message.metadata && (
-                    <div className="ai-metadata">
-                      {message.metadata.confidence !== undefined && (
-                        <div 
-                          className="confidence-indicator"
-                          style={{ color: getConfidenceColor(message.metadata.confidence) }}
-                        >
-                          Confidence: {(message.metadata.confidence * 100).toFixed(0)}%
-                        </div>
-                      )}
-                      {message.metadata.riskScore !== undefined && message.metadata.riskScore > 0 && (
-                        <div 
-                          className="risk-indicator"
-                          style={{ color: getRiskScoreColor(message.metadata.riskScore) }}
-                        >
-                          Risk Score: {message.metadata.riskScore}
-                        </div>
-                      )}
-                      {message.metadata.responseTime && (
-                        <div className="response-time">
-                          Response Time: {message.metadata.responseTime}ms
-                        </div>
                       )}
                     </div>
                   )}

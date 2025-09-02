@@ -351,17 +351,17 @@ router.post('/:orderId/cancel', async (req, res) => {
 router.get('/user/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
-    const { status, limit = 20 } = req.query;
+    const { status, limit = 20, fresh } = req.query;
 
-    // First try OrderCache
-    let orders = await OrderCache.findUserOrders(userId, status);
-    
-    // If no orders in cache, try direct MongoDB query
-    if (orders.length === 0) {
+    let orders = [];
+
+    // If fresh=true is requested, skip cache and go directly to database
+    if (fresh === 'true') {
+      console.log('Fresh data requested - bypassing cache, going directly to database');
       const mongoose = require('mongoose');
       const db = mongoose.connection.db;
       
-      console.log('Querying orders collection for userId:', userId);
+      console.log('Querying orders collection for userId (fresh):', userId);
       
       // Query the orders collection directly with multiple user ID patterns
       const query = { 
@@ -375,35 +375,91 @@ router.get('/user/:userId', async (req, res) => {
       };
       if (status) query.status = status;
       
-      console.log('MongoDB query:', JSON.stringify(query, null, 2));
+      console.log('Fresh MongoDB query:', JSON.stringify(query, null, 2));
       
       const directOrders = await db.collection('orders').find(query)
-        .sort({ createdAt: -1 })
+        .sort({ updatedAt: -1, createdAt: -1 })
         .limit(parseInt(limit))
         .toArray();
       
-      console.log('Direct DB query found orders:', directOrders.length);
+      console.log('Fresh DB query found orders:', directOrders.length);
       if (directOrders.length > 0) {
-        console.log('First order found:', JSON.stringify(directOrders[0], null, 2));
+        console.log('Fresh orders summary:', directOrders.map(o => ({ 
+          orderId: o.orderId, 
+          status: o.status,
+          totalAmount: o.totalAmount,
+          itemCount: o.items?.length
+        })));
+        console.log('First raw order data:', JSON.stringify(directOrders[0], null, 2));
       }
       
       // Convert to our expected format
       orders = directOrders.map(order => ({
         orderId: order.orderId,
         status: order.status,
-        orderData: {
-          orderId: order.orderId,
-          orderDate: order.orderDate,
-          totalAmount: order.totalAmount,
-          items: order.items,
-          shippingAddress: order.shippingAddress,
-          customerName: order.customerName,
-          customerEmail: order.customerEmail
-        },
-        canCancel: () => ['pending', 'confirmed'].includes(order.status),
-        lastChecked: order.updatedAt || order.createdAt,
-        userId: order.customerId || order.userId
+        orderDate: order.orderDate,
+        totalAmount: order.totalAmount,
+        items: order.items,
+        shippingAddress: order.shippingAddress,
+        itemCount: order.items?.length || 0,
+        cancellationEligible: ['pending', 'confirmed', 'processing'].includes(order.status),
+        lastUpdated: order.updatedAt || order.createdAt,
+        customerName: order.customerName,
+        customerEmail: order.customerEmail
       }));
+    } else {
+      // Normal flow - try cache first
+      orders = await OrderCache.findUserOrders(userId, status);
+      
+      // If no orders in cache, try direct MongoDB query
+      if (orders.length === 0) {
+        const mongoose = require('mongoose');
+        const db = mongoose.connection.db;
+        
+        console.log('Querying orders collection for userId:', userId);
+        
+        // Query the orders collection directly with multiple user ID patterns
+        const query = { 
+          $or: [
+            { customerId: userId },
+            { userId: userId },
+            { customerId: `CUST-${userId.split('_')[1]}` }, // Try CUST- prefix format
+            { customerId: 'CUST-001' }, // For testing - match the sample data
+            { customerId: 'CUST-002' }  // For testing - match the sample data
+          ]
+        };
+        if (status) query.status = status;
+        
+        console.log('MongoDB query:', JSON.stringify(query, null, 2));
+        
+        const directOrders = await db.collection('orders').find(query)
+          .sort({ createdAt: -1 })
+          .limit(parseInt(limit))
+          .toArray();
+        
+        console.log('Direct DB query found orders:', directOrders.length);
+        if (directOrders.length > 0) {
+          console.log('First order found:', JSON.stringify(directOrders[0], null, 2));
+        }
+        
+        // Convert to our expected format
+        orders = directOrders.map(order => ({
+          orderId: order.orderId,
+          status: order.status,
+          orderData: {
+            orderId: order.orderId,
+            orderDate: order.orderDate,
+            totalAmount: order.totalAmount,
+            items: order.items,
+            shippingAddress: order.shippingAddress,
+            customerName: order.customerName,
+            customerEmail: order.customerEmail
+          },
+          canCancel: () => ['pending', 'confirmed', 'processing'].includes(order.status),
+          lastChecked: order.updatedAt || order.createdAt,
+          userId: order.customerId || order.userId
+        }));
+      }
     }
     
     const limitedOrders = orders.slice(0, parseInt(limit));
@@ -414,19 +470,23 @@ router.get('/user/:userId', async (req, res) => {
       orders: limitedOrders.map(order => ({
         orderId: order.orderId,
         status: order.status,
-        orderDate: order.orderData?.orderDate,
-        totalAmount: order.orderData?.totalAmount,
-        items: order.orderData?.items,
-        shippingAddress: order.orderData?.shippingAddress,
-        itemCount: order.orderData?.items?.length || 0,
-        cancellationEligible: typeof order.canCancel === 'function' ? order.canCancel() : ['pending', 'confirmed'].includes(order.status),
-        lastUpdated: order.lastChecked
+        orderDate: order.orderDate || order.orderData?.orderDate,
+        totalAmount: order.totalAmount || order.orderData?.totalAmount,
+        items: order.items || order.orderData?.items,
+        shippingAddress: order.shippingAddress || order.orderData?.shippingAddress,
+        itemCount: (order.items || order.orderData?.items)?.length || 0,
+        cancellationEligible: typeof order.canCancel === 'function' ? order.canCancel() : ['pending', 'confirmed', 'processing'].includes(order.status),
+        lastUpdated: order.lastUpdated || order.lastChecked || order.updatedAt || order.createdAt,
+        customerName: order.customerName || order.orderData?.customerName,
+        customerEmail: order.customerEmail || order.orderData?.customerEmail
       })),
       metadata: {
         statusFilter: status || 'all',
         limit: parseInt(limit),
         hasMore: orders.length > parseInt(limit),
-        source: limitedOrders.length > 0 ? 'database' : 'cache'
+        source: fresh === 'true' ? 'database-fresh' : (limitedOrders.length > 0 ? 'database' : 'cache'),
+        fresh: fresh === 'true',
+        timestamp: new Date().toISOString()
       }
     });
 
@@ -566,6 +626,68 @@ router.post('/seed', async (req, res) => {
 });
 
 /**
+ * Add a single test order directly to MongoDB (bypassing cache)
+ */
+router.post('/add-test-order', async (req, res) => {
+  try {
+    const { customerId = 'CUST-001' } = req.body;
+    
+    const mongoose = require('mongoose');
+    const db = mongoose.connection.db;
+    
+    const timestamp = Date.now();
+    const testOrder = {
+      orderId: `ORD-TEST-${timestamp}`,
+      customerId: customerId,
+      status: 'pending',
+      orderDate: new Date(),
+      estimatedDelivery: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      totalAmount: 299.99,
+      items: [
+        {
+          productId: `P-TEST-${timestamp}`,
+          name: `Test Product ${new Date().toLocaleTimeString()}`,
+          quantity: 1,
+          price: 299.99
+        }
+      ],
+      shippingAddress: {
+        street: '123 Test St',
+        city: 'Test City',
+        state: 'TS',
+        zipCode: '12345',
+        country: 'US'
+      },
+      customerName: 'Test User',
+      customerEmail: 'test@example.com',
+      paymentMethod: 'Credit Card',
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    // Insert directly into MongoDB orders collection
+    const result = await db.collection('orders').insertOne(testOrder);
+    
+    if (result.insertedId) {
+      res.json({
+        message: 'Test order added successfully',
+        orderId: testOrder.orderId,
+        customerId: testOrder.customerId,
+        status: testOrder.status,
+        totalAmount: testOrder.totalAmount,
+        insertedId: result.insertedId
+      });
+    } else {
+      res.status(500).json({ error: 'Failed to insert test order' });
+    }
+
+  } catch (error) {
+    console.error('Error adding test order:', error);
+    res.status(500).json({ error: 'Failed to add test order' });
+  }
+});
+
+/**
  * Get order statistics
  */
 router.get('/stats/summary', async (req, res) => {
@@ -608,6 +730,157 @@ router.get('/stats/summary', async (req, res) => {
   } catch (error) {
     console.error('Error getting order stats:', error);
     res.status(500).json({ error: 'Failed to retrieve order statistics' });
+  }
+});
+
+/**
+ * Update order status manually (for testing and admin purposes)
+ */
+router.post('/:orderId/status', async (req, res) => {
+  const startTime = Date.now();
+  
+  try {
+    const { orderId } = req.params;
+    const { userId, newStatus, reason, sessionId } = req.body;
+
+    if (!userId || !newStatus) {
+      return res.status(400).json({ error: 'User ID and new status required' });
+    }
+
+    const validStatuses = ['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'refunded'];
+    if (!validStatuses.includes(newStatus)) {
+      return res.status(400).json({ 
+        error: 'Invalid status',
+        validStatuses 
+      });
+    }
+
+    // Get current order
+    const mongoose = require('mongoose');
+    const db = mongoose.connection.db;
+    
+    const currentOrder = await db.collection('orders').findOne({ 
+      orderId: orderId,
+      customerId: userId
+    });
+    
+    if (!currentOrder) {
+      return res.status(404).json({ 
+        error: 'Order not found',
+        orderId 
+      });
+    }
+
+    const oldStatus = currentOrder.status;
+    
+    // Prepare update fields
+    const updateFields = {
+      status: newStatus,
+      updatedAt: new Date()
+    };
+    
+    // Add specific fields based on status
+    if (newStatus === 'cancelled') {
+      updateFields.cancelledAt = new Date();
+      updateFields.cancelledBy = userId;
+      if (reason) updateFields.cancellationReason = reason;
+    } else if (newStatus === 'shipped') {
+      updateFields.shippedAt = new Date();
+      updateFields.trackingNumber = updateFields.trackingNumber || `TRK${Date.now()}`;
+      updateFields.currentLocation = 'In transit';
+    } else if (newStatus === 'delivered') {
+      updateFields.deliveredAt = new Date();
+      updateFields.currentLocation = 'Delivered to customer';
+    }
+    
+    // Update the order in database
+    const result = await db.collection('orders').updateOne(
+      { orderId: orderId, customerId: userId },
+      { $set: updateFields }
+    );
+    
+    if (result.modifiedCount === 0) {
+      return res.status(400).json({ 
+        error: 'No changes made to the order',
+        orderId,
+        currentStatus: oldStatus
+      });
+    }
+
+    // Emit WebSocket events for real-time updates
+    const io = req.app.get('io');
+    if (io) {
+      const eventData = {
+        orderId: orderId,
+        oldStatus: oldStatus,
+        newStatus: newStatus,
+        timestamp: new Date().toISOString(),
+        userId: userId,
+        sessionId: sessionId || 'manual-update',
+        reason: reason || 'Manual status update'
+      };
+      
+      // Emit specific status events
+      io.emit(`order_${newStatus}`, eventData);
+      
+      // Also emit a generic status update event
+      io.emit('order_status_update', eventData);
+      
+      console.log(`[WebSocket] Manually emitted order_${newStatus} and order_status_update events for ${orderId}`);
+    }
+
+    // Log the status change
+    await AuditLog.logAction({
+      sessionId: sessionId || 'manual-update',
+      userId,
+      action: 'order_status_update',
+      orderId,
+      details: {
+        oldStatus: oldStatus,
+        newStatus: newStatus,
+        reason: reason || 'Manual status update',
+        performanceMetrics: {
+          totalResponseTime: Date.now() - startTime
+        }
+      },
+      result: 'success'
+    });
+
+    res.json({
+      message: `Order ${orderId} status updated successfully`,
+      orderId,
+      oldStatus: oldStatus,
+      newStatus: newStatus,
+      timestamp: new Date().toISOString(),
+      metadata: {
+        processingTime: Date.now() - startTime,
+        websocketEmitted: !!io
+      }
+    });
+
+  } catch (error) {
+    console.error('Error updating order status:', error);
+    
+    // Log error
+    await AuditLog.logAction({
+      sessionId: req.body.sessionId || 'manual-update',
+      userId: req.body.userId || 'unknown',
+      action: 'order_status_update_failed',
+      orderId: req.params.orderId,
+      details: {
+        errorMessage: error.message,
+        performanceMetrics: {
+          totalResponseTime: Date.now() - startTime
+        }
+      },
+      result: 'failure',
+      severity: 'error'
+    }).catch(console.error);
+
+    res.status(500).json({ 
+      error: 'Failed to update order status',
+      orderId: req.params.orderId
+    });
   }
 });
 

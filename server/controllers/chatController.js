@@ -10,6 +10,88 @@ const cacheService = require('../services/cacheService');
 const AuditLog = require('../models/AuditLog');
 const { MongoClient } = require('mongodb');
 
+// Helper function to handle order state changes and emit WebSocket events
+async function updateOrderStatusInDatabase(orderId, newStatus, userId, sessionId, io, reason = null) {
+  const mongoose = require('mongoose');
+  const db = mongoose.connection.db;
+  
+  try {
+    // Get current order status first
+    const currentOrder = await db.collection('orders').findOne({ 
+      orderId: orderId,
+      customerId: userId
+    });
+    
+    if (!currentOrder) {
+      return { success: false, error: `Order ${orderId} not found` };
+    }
+    
+    const oldStatus = currentOrder.status;
+    
+    // Prepare update fields
+    const updateFields = {
+      status: newStatus,
+      updatedAt: new Date()
+    };
+    
+    // Add specific fields based on status
+    if (newStatus === 'cancelled') {
+      updateFields.cancelledAt = new Date();
+      updateFields.cancelledBy = userId;
+      if (reason) updateFields.cancellationReason = reason;
+    } else if (newStatus === 'shipped') {
+      updateFields.shippedAt = new Date();
+      updateFields.trackingNumber = updateFields.trackingNumber || `TRK${Date.now()}`;
+    } else if (newStatus === 'delivered') {
+      updateFields.deliveredAt = new Date();
+      updateFields.currentLocation = 'Delivered to customer';
+    }
+    
+    // Update the order in database
+    const result = await db.collection('orders').updateOne(
+      { orderId: orderId, customerId: userId },
+      { $set: updateFields }
+    );
+    
+    if (result.modifiedCount > 0) {
+      // Emit specific WebSocket event based on the new status
+      if (io) {
+        const eventData = {
+          orderId: orderId,
+          oldStatus: oldStatus,
+          newStatus: newStatus,
+          timestamp: new Date().toISOString(),
+          userId: userId,
+          sessionId: sessionId,
+          reason: reason
+        };
+        
+        // Emit specific status events
+        io.emit(`order_${newStatus}`, eventData);
+        
+        // Also emit a generic status update event
+        io.emit('order_status_update', eventData);
+        
+        console.log(`[WebSocket] Emitted order_${newStatus} and order_status_update events for ${orderId}`);
+      }
+      
+      return { 
+        success: true, 
+        orderId: orderId,
+        oldStatus: oldStatus,
+        newStatus: newStatus,
+        order: { ...currentOrder, ...updateFields }
+      };
+    } else {
+      return { success: false, error: 'No changes made to the order' };
+    }
+    
+  } catch (error) {
+    console.error('Error updating order status:', error);
+    return { success: false, error: error.message };
+  }
+}
+
 // Helper function to handle confirmation responses
 async function handleConfirmationResponse(message, context, userId, io) {
   const lowerMessage = message.toLowerCase().trim();
@@ -274,7 +356,7 @@ router.post('/message', chatRateLimit, async (req, res) => {
             orderId: buttonAction.orderId,
             confidence: 1.0,
             message: `Processing cancellation request for order ${buttonAction.orderId}...`
-          }, message, sessionId);
+          }, message, sessionId, req.app.get('io'));
           break;
         case 'confirm_cancellation':
           buttonResponse = await handleConfirmCancellation(userId, {
@@ -282,7 +364,7 @@ router.post('/message', chatRateLimit, async (req, res) => {
             orderId: buttonAction.orderId,
             confidence: 1.0,
             message: 'Processing confirmation...'
-          }, message, sessionId);
+          }, message, sessionId, req.app.get('io'));
           break;
         case 'cancel_abort':
           buttonResponse = await handleCancelAbort(userId, {
@@ -344,6 +426,55 @@ router.post('/message', chatRateLimit, async (req, res) => {
           fallbackUsed: true,
           sessionId,
           timestamp: new Date().toISOString()
+        }
+      });
+    }
+
+    // Check if user wants to connect with an executive
+    const executiveRequest = message.toLowerCase().includes('executive') || 
+                            message.toLowerCase().includes('human') ||
+                            message.toLowerCase().includes('agent') ||
+                            message.toLowerCase().includes('representative') ||
+                            message.toLowerCase().includes('speak with') ||
+                            message.toLowerCase().includes('talk to') ||
+                            message.toLowerCase().includes('connect');
+
+    if (executiveRequest && (
+        message.toLowerCase().includes('customer') ||
+        message.toLowerCase().includes('support') ||
+        message.toLowerCase().includes('help') ||
+        message.toLowerCase().includes('executive') ||
+        message.toLowerCase().includes('human') ||
+        message.toLowerCase().includes('agent')
+      )) {
+      
+      console.log('[DEBUG] Executive connection requested by user:', userId);
+      
+      // Emit WebSocket notification for executive request
+      const io = req.app.get('io');
+      if (io) {
+        io.emit('executive_requested', {
+          userId,
+          sessionId,
+          timestamp: new Date().toISOString(),
+          message: 'Customer requested executive connection'
+        });
+      }
+      
+      auditData.action = 'executive_connection_requested';
+      auditData.details.performanceMetrics.totalResponseTime = Date.now() - startTime;
+      await AuditLog.logAction(auditData);
+
+      return res.json({
+        action: 'executive_connection',
+        confidence: 1.0,
+        message: `Thank you for reaching out! 👨‍💼\n\nYou are currently in the queue and a customer executive will reach out to you soon.\n\nIf you need any further help in the meantime, you can:\n• Visit our help site: https://help.company.com\n• Contact us via email: support@company.com\n\nWe appreciate your patience!`,
+        requiresConfirmation: false,
+        metadata: {
+          executiveRequested: true,
+          timestamp: new Date().toISOString(),
+          totalResponseTime: Date.now() - startTime,
+          sessionId
         }
       });
     }
@@ -423,10 +554,10 @@ router.post('/message', chatRateLimit, async (req, res) => {
         enhancedResponse = await handleCancelOrders(userId, aiResponse);
         break;
       case 'order_cancellation':
-        enhancedResponse = await handleOrderCancellation(userId, aiResponse, message, sessionId);
+        enhancedResponse = await handleOrderCancellation(userId, aiResponse, message, sessionId, req.app.get('io'));
         break;
       case 'confirm_cancellation':
-        enhancedResponse = await handleConfirmCancellation(userId, aiResponse, message, sessionId);
+        enhancedResponse = await handleConfirmCancellation(userId, aiResponse, message, sessionId, req.app.get('io'));
         break;
       case 'cancel_abort':
         enhancedResponse = await handleCancelAbort(userId, aiResponse);
@@ -700,6 +831,90 @@ router.delete('/context/:sessionId', async (req, res) => {
   } catch (error) {
     console.error('Error clearing context:', error);
     res.status(500).json({ error: 'Failed to clear conversation context' });
+  }
+});
+
+/**
+ * Test database connection and data logging
+ */
+router.get('/test-db', async (req, res) => {
+  try {
+    const mongoose = require('mongoose');
+    const Conversation = require('../models/Conversation');
+    const AuditLog = require('../models/AuditLog');
+    
+    // Test MongoDB connection
+    const dbState = mongoose.connection.readyState;
+    const dbStates = ['disconnected', 'connected', 'connecting', 'disconnecting'];
+    
+    // Test conversation creation
+    const testSessionId = 'test-session-' + Date.now();
+    const testConversation = new Conversation({
+      sessionId: testSessionId,
+      userId: 'CUST-001',
+      messages: [{
+        role: 'user',
+        content: 'Test message for database logging',
+        metadata: { test: true }
+      }],
+      context: {
+        lastOrderInquiry: null,
+        userPreferences: {},
+        conversationSummary: 'Test conversation'
+      }
+    });
+    
+    const savedConversation = await testConversation.save();
+    
+    // Test audit log creation
+    const testAuditLog = await AuditLog.logAction({
+      sessionId: testSessionId,
+      userId: 'CUST-001',
+      action: 'database_test',
+      orderId: null,
+      details: {
+        message: 'Testing database logging functionality',
+        timestamp: new Date()
+      },
+      result: 'success'
+    });
+    
+    // Get counts from database
+    const conversationCount = await Conversation.countDocuments();
+    const auditLogCount = await AuditLog.countDocuments();
+    
+    // Clean up test data
+    await Conversation.deleteOne({ _id: savedConversation._id });
+    if (testAuditLog && testAuditLog._id) {
+      await AuditLog.deleteOne({ _id: testAuditLog._id });
+    }
+    
+    res.json({
+      status: 'success',
+      database: {
+        connected: dbState === 1,
+        state: dbStates[dbState],
+        host: mongoose.connection.host,
+        name: mongoose.connection.name
+      },
+      counts: {
+        conversations: conversationCount,
+        auditLogs: auditLogCount
+      },
+      tests: {
+        conversationSave: 'success',
+        auditLogSave: testAuditLog ? 'success' : 'failed'
+      },
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Database test error:', error);
+    res.status(500).json({
+      status: 'error',
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
   }
 });
 
@@ -1281,7 +1496,7 @@ async function handleCancelOrders(userId, aiResponse) {
 /**
  * Handler for order cancellation requests (specific order)
  */
-async function handleOrderCancellation(userId, aiResponse, originalMessage, sessionId) {
+async function handleOrderCancellation(userId, aiResponse, originalMessage, sessionId, io) {
   try {
     console.log(`[DEBUG] Processing cancellation request for order ${aiResponse.orderId} by user ${userId}`);
     const mongoose = require('mongoose');
@@ -1419,7 +1634,7 @@ This action cannot be undone.`,
 /**
  * Handler for cancellation confirmations
  */
-async function handleConfirmCancellation(userId, aiResponse, originalMessage, sessionId) {
+async function handleConfirmCancellation(userId, aiResponse, originalMessage, sessionId, io) {
   try {
     console.log(`[DEBUG] Processing cancellation confirmation for user ${userId}: ${originalMessage}`);
     const mongoose = require('mongoose');
@@ -1432,63 +1647,25 @@ async function handleConfirmCancellation(userId, aiResponse, originalMessage, se
         const orderId = confirmMatch[1];
         console.log(`[DEBUG] Confirmed cancellation for order ${orderId}`);
         
-        // Update order status to cancelled
-        const result = await db.collection('orders').updateOne(
-          { 
-            orderId: orderId,
-            customerId: userId
-          },
-          { 
-            $set: { 
-              status: 'cancelled',
-              cancelledAt: new Date(),
-              cancelledBy: userId
-            }
-          }
+        // Use the new helper function to update order status and emit WebSocket events
+        const updateResult = await updateOrderStatusInDatabase(
+          orderId, 
+          'cancelled', 
+          userId, 
+          sessionId, 
+          io,
+          'Customer requested cancellation via chat'
         );
-
-        if (result.matchedCount === 0) {
+        
+        if (!updateResult.success) {
           return {
             ...aiResponse,
-            message: `I couldn't find order ${orderId} to cancel. Please contact customer service.`
+            message: `I couldn't cancel order ${orderId}. ${updateResult.error}`
           };
         }
 
-        if (result.modifiedCount === 0) {
-          return {
-            ...aiResponse,
-            message: `Order ${orderId} could not be cancelled. It may already be cancelled or in a non-cancellable status.`
-          };
-        }
-
-        // Emit real-time update for cancellation
-        const io = require('socket.io')(require('http').createServer());
-        if (io && sessionId) {
-          io.to(sessionId).emit('order_cancelled', {
-            orderId: orderId,
-            status: 'cancelled',
-            timestamp: new Date().toISOString()
-          });
-          
-          // Also emit a notification event
-          io.to(sessionId).emit('notification', {
-            type: 'success',
-            message: `Order cancelled successfully!\n\nYour order has been cancelled and you will receive a refund within 3-5 business days.`,
-            timestamp: new Date().toISOString()
-          });
-        }
-
-        // Get order details for friendly message
-        const order = await db.collection('orders')
-          .findOne({ 
-            orderId: orderId,
-            customerId: userId
-          });
-
-        let orderDescription = orderId;
-        if (order && order.items && order.items.length > 0) {
-          orderDescription = order.items[0].name;
-        }
+        // Get order description for friendly message
+        const orderDescription = updateResult.order.items?.[0]?.name || orderId;
 
         return {
           ...aiResponse,
@@ -1498,7 +1675,19 @@ Your order for **${orderDescription}** has been cancelled.
 
 You will receive a refund within 3-5 business days. A confirmation email has been sent to your registered email address.
 
-Is there anything else I can help you with?`
+Is there anything else I can help you with?`,
+          metadata: {
+            ...aiResponse.metadata,
+            orderCancelled: true,
+            action: 'order_cancelled',
+            confirmed: true,
+            orderId: orderId,
+            stateChange: true,
+            oldStatus: updateResult.oldStatus,
+            newStatus: updateResult.newStatus,
+            websocketEvent: true,
+            eventType: 'order_cancelled'
+          }
         };
       }
     }
