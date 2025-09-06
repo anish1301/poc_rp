@@ -1,9 +1,10 @@
 const mongoose = require('mongoose');
+require('dotenv').config();
 
 const connectDB = async () => {
   try {
     // Primary connection string with authentication for Docker setup
-    const primaryURI = 'mongodb://admin:password123@localhost:27017/poc-rp-db?authSource=admin';
+    const primaryURI = process.env.MONGODB_URI || 'mongodb+srv://anishkumar130119:<db_password>@cluster0.ig0dl.mongodb.net/';
     
     try {
       const conn = await mongoose.connect(primaryURI, {
@@ -17,7 +18,7 @@ const connectDB = async () => {
       console.log('Trying fallback connection without authentication...');
       
       // Fallback connection without authentication
-      const fallbackURI = 'mongodb://localhost:27017/poc-rp-db';
+      const fallbackURI = 'mongodb+srv://anishkumar130119:<db_password>@cluster0.ig0dl.mongodb.net/';
       const conn = await mongoose.connect(fallbackURI, {
         useNewUrlParser: true,
         useUnifiedTopology: true,
