@@ -2,6 +2,9 @@ import React, { createContext, useContext, useReducer, useEffect } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import io from 'socket.io-client';
 
+// API base URL - uses environment variable or fallback to localhost
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5001';
+
 // Initial state
 const initialState = {
   sessionId: null,
@@ -117,7 +120,7 @@ export const ChatProvider = ({ children }) => {
     dispatch({ type: actionTypes.SET_SESSION_ID, payload: sessionId });
 
     // Initialize socket connection
-    const socket = io('http://localhost:5001', {
+    const socket = io(API_BASE_URL, {
       transports: ['websocket', 'polling']
     });
 
@@ -199,7 +202,7 @@ export const ChatProvider = ({ children }) => {
     dispatch({ type: actionTypes.SET_ERROR, payload: null });
 
     try {
-      const response = await fetch('/api/chat/message', {
+      const response = await fetch(`${API_BASE_URL}/api/chat/message`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -311,7 +314,7 @@ export const ChatProvider = ({ children }) => {
     if (!state.sessionId) return [];
 
     try {
-      const response = await fetch(`/api/chat/history/${state.sessionId}?userId=${state.userId}`);
+      const response = await fetch(`${API_BASE_URL}/api/chat/history/${state.sessionId}?userId=${state.userId}`);
       if (response.ok) {
         const data = await response.json();
         return data.messages || [];
@@ -326,7 +329,7 @@ export const ChatProvider = ({ children }) => {
   const clearConversation = async () => {
     try {
       if (state.sessionId) {
-        await fetch(`/api/chat/context/${state.sessionId}?userId=${state.userId}`, {
+        await fetch(`${API_BASE_URL}/api/chat/context/${state.sessionId}?userId=${state.userId}`, {
           method: 'DELETE'
         });
       }
@@ -341,7 +344,7 @@ export const ChatProvider = ({ children }) => {
     if (!orderId) return null;
 
     try {
-      const response = await fetch(`/api/orders/${orderId}?userId=${state.userId}`, {
+      const response = await fetch(`${API_BASE_URL}/api/orders/${orderId}?userId=${state.userId}`, {
         headers: {
           'X-Session-ID': state.sessionId
         }
@@ -362,7 +365,7 @@ export const ChatProvider = ({ children }) => {
   // Seed test orders for development
   const seedTestOrders = async () => {
     try {
-      const response = await fetch('/api/orders/seed', {
+      const response = await fetch(`${API_BASE_URL}/api/orders/seed`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

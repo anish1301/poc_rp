@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useChat } from '../context/ChatContext';
 
+// API base URL - uses environment variable or fallback to localhost
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5001';
+
 const OrderStatus = () => {
   const { getOrderDetails, orderStatus, seedTestOrders, userId, updateOrderStatus } = useChat();
   const [orderDetails, setOrderDetails] = useState({});
@@ -17,7 +20,7 @@ const OrderStatus = () => {
       // Add cache-busting timestamp to ensure fresh data
       const timestamp = Date.now();
       console.log('🔄 Fetching fresh orders for userId:', userId);
-      const response = await fetch(`/api/orders/user/${userId}?limit=10&fresh=true&t=${timestamp}`);
+      const response = await fetch(`${API_BASE_URL}/api/orders/user/${userId}?limit=10&fresh=true&t=${timestamp}`);
       console.log('📡 Response status:', response.status, response.ok);
       
       if (response.ok) {
@@ -114,7 +117,7 @@ const OrderStatus = () => {
   const addTestOrder = async () => {
     setSeedingOrders(true);
     try {
-      const response = await fetch('/api/orders/add-test-order', {
+      const response = await fetch(`${API_BASE_URL}/api/orders/add-test-order`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
