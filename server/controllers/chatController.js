@@ -189,7 +189,7 @@ async function handleConfirmationResponse(message, context, userId, io) {
 // Helper function to perform actual order cancellation
 async function performOrderCancellation(orderId, userId, reason, io) {
   const { MongoClient } = require('mongodb');
-  const mongoUrl = process.env.MONGODB_URI || 'mongodb://admin:password123@localhost:27017/poc-rp-db?authSource=admin';
+  const mongoUrl = process.env.MONGODB_URI || 'mongodb+srv://anishUser21:anish123321@cluster0.ig0dl.mongodb.net/';
   
   let client;
   try {
