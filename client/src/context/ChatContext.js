@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import io from 'socket.io-client';
 
 // API base URL - uses environment variable or fallback to localhost
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5001';
+const API_BASE_URL = process.env.REACT_APP_API_URL;
 
 // Initial state
 const initialState = {
