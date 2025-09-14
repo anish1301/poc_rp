@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useChat } from '../context/ChatContext';
 
 // API base URL - uses environment variable or fallback to localhost
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5001';
+const API_BASE_URL = process.env.REACT_APP_API_URL;
 
 const OrderStatus = () => {
   const { getOrderDetails, orderStatus, seedTestOrders, userId, updateOrderStatus } = useChat();
