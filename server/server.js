@@ -23,7 +23,9 @@ app.set('trust proxy', 1);
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: process.env.NODE_ENV === 'production' ? false : ['https://poc-rp-3.onrender.com'],
+   origin: process.env.NODE_ENV === 'production' 
+      ? ['https://poc-rp-3.onrender.com'] 
+      : ['https://poc-rp-3.onrender.com'],
     methods: ['GET', 'POST']
   }
 });
@@ -31,8 +33,11 @@ const io = socketIo(server, {
 // Middleware
 app.use(helmet());
 app.use(cors({
-  origin: process.env.NODE_ENV === 'production' ? false : ['https://poc-rp-3.onrender.com'],
+  origin: process.env.NODE_ENV === 'production' 
+    ? ['https://poc-rp-3.onrender.com'] 
+    : ['http://localhost:3000', 'https://poc-rp-3.onrender.com'],
   credentials: true
+ 
 }));
 app.use(express.json({ limit: '10mb' }));
 
